@@ -15,7 +15,7 @@ struct BeatmapGroup {
     std::string background_path; // Absolute path to the background/cover image
     int         preview_ms = 0;
     float       top_stars  = 0.0f; // Highest star rating across all diffs
-
+float       bpm        = 0.0f;  // dominant BPM from first diff's timing (set during scan)
     std::vector<Beatmap> diffs; // Metadata-only until LoadDiff() is called
 };
 

@@ -19,6 +19,7 @@ sources = [
     'src/screen_settings.cpp',
     'src/screen_beatmaps.cpp',
     'src/ui/oauth_popup.cpp',
+    'src/beatmap/difficulty.cpp',
     'src/screen_song_select.cpp',
     'src/beatmap/parser.cpp',
     'src/beatmap/library.cpp',
