@@ -140,6 +140,18 @@ int BeatmapLibrary::Scan(const std::string &dir) {
                 return a.difficulty.star_rating < b.difficulty.star_rating;
               });
 
+    // Set dominant BPM from the first diff's timing points via a quick full
+    // parse of just the timing section. We do a lightweight parse here so the
+    // song-select list can show BPM without requiring a full diff load.
+    // We reuse Parse() on the first diff but only need timing_points; this is
+    // a one-time cost per group at scan time.
+    {
+      Beatmap tmp;
+      std::string err;
+      if (BeatmapParser::Parse(group.diffs[0].source_path, tmp, err))
+        group.bpm = tmp.DominantBpm();
+    }
+
     groups.push_back(std::move(group));
   }
 
@@ -163,17 +175,21 @@ bool BeatmapLibrary::LoadDiff(BeatmapGroup &group, int diff_index,
   if (diff.loaded)
     return true; // already loaded
 
-  // Preserve metadata fields that ParseMetadataOnly populated, then do a
-  // full parse into a temporary and move the notes/timing data across.
+  // Full parse into a temporary beatmap.
   Beatmap full;
   if (!BeatmapParser::Parse(diff.source_path, full, out_error))
     return false;
+
+  // Move note and timing data into the metadata-only diff object FIRST,
+  // then calculate star rating so CalculateStarRating sees actual notes.
+  diff.notes         = std::move(full.notes);
+  diff.timing_points = std::move(full.timing_points);
+  diff.loaded        = true;
+
   diff.difficulty.star_rating = CalculateStarRating(diff);
   if (diff.difficulty.star_rating > group.top_stars)
     group.top_stars = diff.difficulty.star_rating;
-  diff.notes = std::move(full.notes);
-  diff.timing_points = std::move(full.timing_points);
-  diff.loaded = true;
+
   return true;
 }
 

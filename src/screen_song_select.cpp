@@ -37,66 +37,84 @@ static int s_last_group_count = -1;
 // ────────────────────────────────────────────────────────────────
 static Texture2D s_cover = {};
 static std::string s_cover_folder; // which group the texture belongs to
-static void UnloadCover() {
-  if (s_cover.id > 0) {
-    UnloadTexture(s_cover);
-    s_cover = {};
-  }
-  s_cover_folder.clear();
-}
-static void LoadCover(int group_idx) {
-  if (group_idx < 0 || group_idx >= (int)s_filtered.size()) {
-    UnloadCover();
-    return;
-  }
-  const std::string &folder = s_filtered[group_idx]->folder;
-  if (folder == s_cover_folder) return;
 
+// Async cover loading (pipe-based, non-blocking)
+static FILE*       s_cover_pipe        = nullptr;
+static std::string s_cover_tmp;
+static std::string s_cover_loading_folder; // folder currently being loaded
+static int         s_cover_loading_idx    = -1;
+
+static void UnloadCover() {
+  if (s_cover_pipe) { pclose(s_cover_pipe); s_cover_pipe = nullptr; }
   if (s_cover.id > 0) { UnloadTexture(s_cover); s_cover = {}; }
-  s_cover_folder = folder;
+  s_cover_folder.clear();
+  s_cover_loading_folder.clear();
+  s_cover_loading_idx = -1;
+}
+
+// Kick off an async convert+load for the given group index.
+// If the image is a common format (jpg/png) raylib can load it directly;
+// we still use the pipe approach so we never block the main thread.
+static void StartLoadCover(int group_idx) {
+  if (group_idx < 0 || group_idx >= (int)s_filtered.size()) return;
+
+  const std::string &folder = s_filtered[group_idx]->folder;
+  // Already loaded or already loading this folder — nothing to do.
+  if (folder == s_cover_folder || folder == s_cover_loading_folder) return;
+
+  // Cancel any in-progress load.
+  if (s_cover_pipe) { pclose(s_cover_pipe); s_cover_pipe = nullptr; }
 
   const std::string &path = s_filtered[group_idx]->background_path;
-  TraceLog(LOG_INFO, "LoadCover: path='%s'", path.c_str());
-  if (path.empty()) { TraceLog(LOG_WARNING, "LoadCover: empty path"); return; }
+  if (path.empty()) return;
 
-  Image img = LoadImage(path.c_str());
-  TraceLog(LOG_INFO, "LoadCover: after LoadImage data=%p format=%d w=%d h=%d",
-           img.data, img.format, img.width, img.height);
+  s_cover_loading_folder = folder;
+  s_cover_loading_idx    = group_idx;
+  s_cover_tmp = "/tmp/ensou_ss_bg_" + std::to_string(group_idx) + ".bmp";
 
-  if (img.data == nullptr || img.format == 0) {
-    TraceLog(LOG_WARNING, "LoadCover: direct load failed, trying convert...");
-    if (img.data) UnloadImage(img);
-    img = {};
-std::string tmp = "/tmp/ensou_bg_conv.bmp";
-std::string cmd = "magick \"" + path + "\" -colorspace sRGB \"" + tmp + "\" 2>/dev/null";
-    int ret = system(cmd.c_str());
-    TraceLog(LOG_INFO, "LoadCover: convert exit=%d", ret);
-    // Log convert stderr
-    FILE* log = fopen("/tmp/ensou_convert.log", "r");
-    if (log) {
-      char buf[256]; std::string err;
-      while (fgets(buf, sizeof(buf), log)) err += buf;
-      fclose(log);
-      if (!err.empty())
-        TraceLog(LOG_WARNING, "LoadCover: convert stderr: %s", err.c_str());
-    }
-    img = LoadImage(tmp.c_str());
-    TraceLog(LOG_INFO, "LoadCover: after convert LoadImage data=%p format=%d w=%d h=%d",
-             img.data, img.format, img.width, img.height);
-    if (img.data == nullptr || img.format == 0) {
-      TraceLog(LOG_ERROR, "LoadCover: convert fallback also failed");
-      if (img.data) UnloadImage(img);
-      return;
-    }
-  }
+  // Convert to BMP so raylib's stb_image can always load it, then signal done
+  // by writing a sentinel file. We use a shell one-liner: try magick first,
+  // fall back to cp (in case it's already a plain JPEG/PNG raylib can handle).
+  std::string cmd =
+      "(magick \"" + path + "\" -colorspace sRGB \"" + s_cover_tmp + "\" "
+      "|| cp \"" + path + "\" \"" + s_cover_tmp + "\") 2>/dev/null && echo OK";
+
+  s_cover_pipe = popen(cmd.c_str(), "r");
+}
+
+// Poll the async cover pipe each frame; finalise the texture when done.
+static void PollCoverLoad() {
+  if (!s_cover_pipe) return;
+
+  char buf[256];
+  std::string out;
+  while (fgets(buf, sizeof(buf), s_cover_pipe)) out += buf;
+  if (!feof(s_cover_pipe)) return; // not done yet
+
+  pclose(s_cover_pipe);
+  s_cover_pipe = nullptr;
+
+  // Only apply the result if it's still for the group we care about.
+  if (s_cover_loading_idx < 0 ||
+      s_cover_loading_idx >= (int)s_filtered.size() ||
+      s_filtered[s_cover_loading_idx]->folder != s_cover_loading_folder)
+    return;
+
+  Image img = LoadImage(s_cover_tmp.c_str());
+  if (!img.data || img.format == 0) { if (img.data) UnloadImage(img); return; }
 
   ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-  TraceLog(LOG_INFO, "LoadCover: after ImageFormat format=%d", img.format);
-  s_cover = LoadTextureFromImage(img);
+  Texture2D tex = LoadTextureFromImage(img);
   UnloadImage(img);
-  TraceLog(LOG_INFO, "LoadCover: texture id=%d", s_cover.id);
-  if (s_cover.id > 0)
-    SetTextureFilter(s_cover, TEXTURE_FILTER_BILINEAR);
+
+  if (tex.id > 0) {
+    SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+    if (s_cover.id > 0) UnloadTexture(s_cover);
+    s_cover        = tex;
+    s_cover_folder = s_cover_loading_folder;
+  }
+  s_cover_loading_folder.clear();
+  s_cover_loading_idx = -1;
 }
 
 // ─── Helpers
@@ -144,7 +162,7 @@ static std::string TruncStr(Font font, const std::string &text, float max_w,
 // ─── Draw song card
 // ───────────────────────────────────────────────────────────
 static bool DrawSongCard(int id, Rectangle r, const BeatmapGroup &g,
-                         bool selected) {
+                         bool selected, bool cover_ready) {
   auto &ws = ui.states[id % MAX_WIDGET_STATES];
   bool hov = CheckCollisionPointRec(GetMousePosition(), r);
   bool clk = hov && IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
@@ -177,9 +195,7 @@ static bool DrawSongCard(int id, Rectangle r, const BeatmapGroup &g,
   float cv = 52.0f;
   float cvx = rr.x + 12.0f, cvy = rr.y + (rr.height - cv) * 0.5f;
 
-  // Check if this group has its texture loaded (only selected group has it)
-  bool has_tex = (selected && s_cover.id > 0);
-  if (has_tex) {
+  if (cover_ready && s_cover.id > 0) {
     // Draw texture scaled to fit the square
     Rectangle src = {0, 0, (float)s_cover.width, (float)s_cover.height};
     // Crop to square from center
@@ -232,9 +248,10 @@ static bool DrawSongCard(int id, Rectangle r, const BeatmapGroup &g,
   DrawTextRight(ui.font_body, diff_buf, rx2, rr.y + 28.0f, 11.0f, 0.3f,
                 UI_TEXT_MUTED);
 
-  if (!g.diffs.empty()) {
+  // Show BPM from group (set at scan time from dominant BPM of first diff)
+  if (g.bpm > 0.0f) {
     char bpm_buf[16];
-    snprintf(bpm_buf, sizeof(bpm_buf), "%.0f BPM", g.diffs[0].DominantBpm());
+    snprintf(bpm_buf, sizeof(bpm_buf), "%.0f BPM", g.bpm);
     DrawTextRight(ui.font_body, bpm_buf, rx2, rr.y + 44.0f, 11.0f, 0.3f,
                   UI_TEXT_MUTED);
   }
@@ -243,7 +260,7 @@ static bool DrawSongCard(int id, Rectangle r, const BeatmapGroup &g,
 }
 
 // ─── Draw detail panel
-// ────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────
 static void DrawDetailPanel(float x, float y, float w, float h, BeatmapGroup &g,
                             int &sel_diff) {
   DrawRectRounded({x, y, w, h}, 12.0f, UI_SURFACE);
@@ -255,7 +272,7 @@ static void DrawDetailPanel(float x, float y, float w, float h, BeatmapGroup &g,
   float cvh = 120.0f;
 
   // Cover art
-  if (s_cover.id > 0) {
+  if (s_cover.id > 0 && s_cover_folder == g.folder) {
     // Draw full-width cover with slight dimming
     Rectangle src = {0, 0, (float)s_cover.width, (float)s_cover.height};
     // Letterbox: crop width to match aspect
@@ -278,6 +295,17 @@ static void DrawDetailPanel(float x, float y, float w, float h, BeatmapGroup &g,
                            ColorAlpha(BLACK, 0.55f));
     DrawRectangleRoundedLinesEx({px, py, cvw, cvh}, 8.0f / fminf(cvw, cvh), 8,
                                 1.5f, ColorAlpha(UI_ACCENT, 0.25f));
+  } else if (!s_cover_loading_folder.empty() && s_cover_loading_folder == g.folder) {
+    // Loading spinner while async cover is in flight
+    DrawRectRounded({px, py, cvw, cvh}, 8.0f, ColorAlpha(UI_SURFACE2, 0.8f));
+    float sa = (float)GetTime() * 4.0f;
+    for (int i = 0; i < 10; i++) {
+      float a = sa + (float)i / 10 * 2 * PI;
+      DrawCircleV({px + cvw * 0.5f + cosf(a) * 16.0f,
+                   py + cvh * 0.5f + sinf(a) * 16.0f},
+                  2.5f + ((float)i / 10) * 2.0f,
+                  ColorAlpha(UI_ACCENT, (float)i / 10));
+    }
   } else {
     DrawRectRounded({px, py, cvw, cvh}, 8.0f, ColorAlpha(UI_ACCENT, 0.12f));
     DrawRectRoundedBorder({px, py, cvw, cvh}, 8.0f, 1.5f,
@@ -338,6 +366,10 @@ static void DrawDetailPanel(float x, float y, float w, float h, BeatmapGroup &g,
       snprintf(sb, sizeof(sb), "%.2f*", g.diffs[i].difficulty.star_rating);
       DrawTextRight(ui.font_body, sb, x + w - 18.0f, py + dh2 * 0.5f - 7.0f,
                     11.0f, 0.3f, dc);
+    } else if (!g.diffs[i].loaded) {
+      // Show loading indicator for diffs not yet loaded
+      DrawTextRight(ui.font_body, "...", x + w - 18.0f, py + dh2 * 0.5f - 7.0f,
+                    11.0f, 0.3f, ColorAlpha(UI_TEXT_MUTED, 0.4f));
     }
     py += dh2 + dgap;
   }
@@ -349,8 +381,8 @@ static void DrawDetailPanel(float x, float y, float w, float h, BeatmapGroup &g,
                ColorAlpha(UI_TEXT_MUTED, 0.5f));
   }
 
-  // Info row
-  if (sel_diff < (int)g.diffs.size()) {
+  // Info row — only show if the selected diff is loaded
+  if (sel_diff < (int)g.diffs.size() && g.diffs[sel_diff].loaded) {
     float iy = y + h - 80.0f;
     DrawLineEx({px, iy}, {x + w - 18.0f, iy}, 1.0f, UI_BORDER);
     iy += 8.0f;
@@ -380,6 +412,9 @@ void UpdateDrawSongSelect() {
   int sw = GetScreenWidth();
   int sh = GetScreenHeight();
 
+  // Poll async cover load every frame
+  PollCoverLoad();
+
   DrawRectangle(0, 0, sw, sh, UI_BG);
   DrawNavBar("SONG SELECT", true);
 
@@ -398,9 +433,6 @@ void UpdateDrawSongSelect() {
       UnloadCover();
     }
   }
-
-  // Load cover for selected group
-  LoadCover(s_selected_group);
 
   // ── Search bar ────────────────────────────────────────────────────────────
   float bar_h = 52.0f;
@@ -534,20 +566,39 @@ void UpdateDrawSongSelect() {
   float cy = content_top + list_pad - s_scroll_y;
   float card_w = list_w - list_pad * 2.0f - 2.0f;
 
+  // Track which card is hovered so we can preload its cover
+  int hovered_group = -1;
+
   for (int i = 0; i < (int)s_filtered.size(); i++) {
     Rectangle cb = {list_pad, cy, card_w, card_h};
     if (cy + card_h >= content_top && cy <= (float)sh) {
       bool sel = (s_selected_group == i);
+
+      // Detect hover to preload cover
+      if (CheckCollisionPointRec(GetMousePosition(), cb))
+        hovered_group = i;
+
+      // Is this card's cover the one currently loaded?
+      bool cover_ready = (sel || hovered_group == i) &&
+                         s_cover.id > 0 &&
+                         s_cover_folder == s_filtered[i]->folder;
+
       int wid = SS_CARD_BASE +
                 (i % (MAX_WIDGET_STATES - SS_CARD_BASE % MAX_WIDGET_STATES));
-      if (DrawSongCard(wid, cb, *s_filtered[i], sel)) {
+      if (DrawSongCard(wid, cb, *s_filtered[i], sel, cover_ready)) {
         if (s_selected_group == i) {
+          // Deselect
           s_selected_group = -1;
           UnloadCover();
         } else {
           s_selected_group = i;
-          s_selected_diff = 0;
-          s_cover_folder.clear(); // force reload
+          s_selected_diff  = 0;
+
+          // Load all diffs for this group so star ratings and lengths are shown.
+          // This is fast enough for typical song folders (a few diffs each).
+          std::string err;
+          for (int d = 0; d < (int)s_filtered[i]->diffs.size(); d++)
+            beatmap_library.LoadDiff(*s_filtered[i], d, err);
         }
       }
     }
@@ -555,6 +606,13 @@ void UpdateDrawSongSelect() {
   }
 
   EndScissorMode();
+
+  // Start async cover load for the hovered or selected group (whichever is
+  // more specific). This runs every frame but StartLoadCover() is a no-op if
+  // the right cover is already loaded or already loading.
+  int cover_target = (s_selected_group >= 0) ? s_selected_group : hovered_group;
+  if (cover_target >= 0)
+    StartLoadCover(cover_target);
 
   // ── Detail panel ──────────────────────────────────────────────────────────
   if (s_detail_anim.value > 0.01f && s_selected_group >= 0 &&
