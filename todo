@@ -2,8 +2,33 @@ fix these first {
 fix error where song art doesnt load unless you click on it
 sort diffs by easiest to hardest and color correctly
 }
+
+-- important
 make osu songs playable (might take a min)
-Skin support
 implement our custom note types
 make a map editor in game
+Support importing ensou maps
+
+-- in regards to making songs playable
+
+-- very start
+Render Basic Circle Notes
+Make Notes Sync With The Music
+Have Note Hit Registeration
+
+-- after every thing works
+Scroll Speed Support
+Have Note Hit Scores (Mag, Perfect, Great, Good, Ok, Miss)
+Combo System
+
+
+-- playable stuff end
+
+-- way later on
+Skin support
+Multiplayer
+ClanWars
+
+
+
 
