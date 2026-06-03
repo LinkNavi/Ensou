@@ -4,9 +4,11 @@
 #include "screen_mainmenu.h"
 #include "screen_settings.h"
 #include "screen_beatmaps.h"
+#include "screen_song_select.h"
 #include "beatmap/library.h"
 #include "beatmap/downloader.h"
 #include <raymath.h>
+
 Screen current_screen = MAIN_MENU;
 
 int main() {
@@ -15,18 +17,15 @@ int main() {
     SetTargetFPS(240);
     InitAudioDevice();
 
-    // Load fonts — put your ttf files in skin/
     ui.LoadFonts("skin/body.ttf", "skin/heading.ttf", "skin/mono.ttf");
 
-    // Scan songs directory for beatmaps
     int found = beatmap_library.Scan("songs");
     TraceLog(LOG_INFO, "BeatmapLibrary: found %d song(s)", found);
 
-    // Load osu! token from config if present
     if (osu_downloader.LoadToken("config.ini"))
-        TraceLog(LOG_INFO, "osu! token loaded from config.ini");
+        TraceLog(LOG_INFO, "osu! credentials loaded from config.ini");
     else
-        TraceLog(LOG_INFO, "No osu! token found — paste one in Settings to enable downloads");
+        TraceLog(LOG_INFO, "No osu! credentials found");
 
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_ESCAPE))
@@ -40,15 +39,13 @@ int main() {
         ClearBackground(UI_BG);
 
         switch (current_screen) {
-            case MAIN_MENU: UpdateDrawMainMenu(); break;
-            case BEATMAPS:   UpdateDrawBeatmaps();  break;
-            case SETTINGS:  UpdateDrawSettings(); break;
-            default: {
-                TraceLog(LOG_INFO, "Not Supported Yet!");
+            case MAIN_MENU:   UpdateDrawMainMenu();    break;
+            case BEATMAPS:    UpdateDrawBeatmaps();    break;
+            case SETTINGS:    UpdateDrawSettings();    break;
+            case SONG_SELECT: UpdateDrawSongSelect();  break;
+            default:
                 screen_transition.FadeTo([]{ current_screen = MAIN_MENU; });
-
-
-            };
+                break;
         }
 
         EndDrawing();

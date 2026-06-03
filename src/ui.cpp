@@ -92,20 +92,25 @@ void ParticleSystem::Draw() {
 
 // ─── UIContext ────────────────────────────────────────────────────────────────
 void UIContext::LoadFonts(const char* body, const char* heading, const char* mono) {
-    font_body    = LoadFontEx(body,    32, nullptr, 512);
-    font_heading = LoadFontEx(heading, 64, nullptr, 512);
-    font_mono    = LoadFontEx(mono,    32, nullptr, 256);
-    SetTextureFilter(font_body.texture,    TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(font_heading.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(font_mono.texture,    TEXTURE_FILTER_BILINEAR);
-    fonts_loaded = true;
+    Font def = GetFontDefault();
+
+    font_body    = FileExists(body)    ? LoadFontEx(body,    32, nullptr, 512) : def;
+    font_heading = FileExists(heading) ? LoadFontEx(heading, 64, nullptr, 512) : def;
+    font_mono    = FileExists(mono)    ? LoadFontEx(mono,    32, nullptr, 256) : def;
+
+    if (font_body.texture.id    > 0) SetTextureFilter(font_body.texture,    TEXTURE_FILTER_BILINEAR);
+    if (font_heading.texture.id > 0) SetTextureFilter(font_heading.texture, TEXTURE_FILTER_BILINEAR);
+    if (font_mono.texture.id    > 0) SetTextureFilter(font_mono.texture,    TEXTURE_FILTER_BILINEAR);
+
+    fonts_loaded = true; // always true — fonts are either custom or default
 }
 
 void UIContext::UnloadFonts() {
     if (!fonts_loaded) return;
-    UnloadFont(font_body);
-    UnloadFont(font_heading);
-    UnloadFont(font_mono);
+    // Only unload if it's not the default font (default font has id 1)
+    if (font_body.texture.id    > 1) UnloadFont(font_body);
+    if (font_heading.texture.id > 1) UnloadFont(font_heading);
+    if (font_mono.texture.id    > 1) UnloadFont(font_mono);
 }
 
 void UIContext::Update() {

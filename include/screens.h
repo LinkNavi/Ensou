@@ -5,4 +5,5 @@ enum Screen {
     PLAYSET,
     BEATMAPS,
     SETTINGS,
+    SONG_SELECT,
 };
